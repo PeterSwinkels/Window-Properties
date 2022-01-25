@@ -6,6 +6,8 @@ Option Explicit
 Private Const EM_GETPASSWORDCHAR As Long = &HD2&
 Private Const EM_SETPASSWORDCHAR As Long = &HCC&
 Private Const ERROR_IO_PENDING As Long = 997
+Private Const ERROR_INVALID_HANDLE As Long = 6
+Private Const ERROR_INVALID_WINDOW_HANDLE As Long = 1400
 Private Const ERROR_NOT_ALL_ASSIGNED As Long = 1300
 Private Const ERROR_SUCCESS As Long = 0
 Private Const ES_PASSWORD As Long = &H20&
@@ -56,8 +58,9 @@ Private Declare Function WaitMessage Lib "User32.dll" () As Long
 Private Declare Sub Sleep Lib "Kernel32.dll" (ByVal dwMilliseconds As Long)
 
 'The constants used by this program.
-Private Const MAX_STRING As Long = 65535   'Defines the maximum number of characters used for a string buffer.
-Public Const NO_HANDLE As Long = 0         'Indicates no handle.
+Private Const ESCAPE_CHARACTER As String = "\"   'Defines the escape character used for non-displayable character codes.
+Private Const MAX_STRING As Long = 65535         'Defines the maximum number of characters used for a string buffer.
+Public Const NO_HANDLE As Long = 0               'Indicates no handle.
 
 'This structure defines a window's property.
 Public Type PropertyStr
@@ -92,19 +95,21 @@ Static SuppressAPIErrors As Boolean
    
    If ResetSuppression Then SuppressAPIErrors = False
    
-   If Not (ErrorCode = ERROR_SUCCESS Or ErrorCode = Ignored) Then
-      Description = String$(MAX_STRING, vbNullChar)
-      Length = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM Or FORMAT_MESSAGE_IGNORE_INSERTS, CLng(0), ErrorCode, CLng(0), Description, Len(Description), CLng(0))
-      If Length = 0 Then
-         Description = "No description."
-      ElseIf Length > 0 Then
-         Description = Left$(Description, Length - 1)
+   If Not SuppressAPIErrors Then
+      If Not (ErrorCode = ERROR_SUCCESS Or ErrorCode = Ignored) Then
+         Description = String$(MAX_STRING, vbNullChar)
+         Length = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM Or FORMAT_MESSAGE_IGNORE_INSERTS, CLng(0), ErrorCode, CLng(0), Description, Len(Description), CLng(0))
+         If Length = 0 Then
+            Description = "No description."
+         ElseIf Length > 0 Then
+            Description = Left$(Description, Length - 1)
+         End If
+        
+         Message = "API error code: " & CStr(ErrorCode) & " - " & Description
+         Message = Message & "Return value: " & CStr(ReturnValue) & vbCrLf
+         Message = Message & "Continue displaying API error messages?"
+         SuppressAPIErrors = (MsgBox(Message, vbYesNo Or vbExclamation) = vbNo)
       End If
-     
-      Message = "API error code: " & CStr(ErrorCode) & " - " & Description
-      Message = Message & "Return value: " & CStr(ReturnValue) & vbCrLf
-      Message = Message & "Continue displaying API error messages?"
-      If Not SuppressAPIErrors Then SuppressAPIErrors = (MsgBox(Message, vbYesNo Or vbExclamation) = vbNo)
    End If
    
 EndRoutine:
@@ -119,7 +124,7 @@ End Function
 'This procedure copies the string with the specified pointer to the specified target string.
 Private Function CopyString(Target As String, SourceP As Long) As String
 On Error GoTo ErrorTrap
-   Target = String$(CheckForError(lstrlenA(SourceP)), vbNullChar)
+   Target = String$(CheckForError(lstrlenA(SourceP), , ERROR_INVALID_HANDLE), vbNullChar)
    CheckForError lstrcpyA(Target, SourceP)
 EndRoutine:
    CopyString = Target
@@ -131,8 +136,8 @@ ErrorTrap:
 End Function
 
 
-'This procedure converts non-displayable characters in the specified text to escape sequences.
-Public Function Escape(Text As String, Optional EscapeCharacter As String = "/", Optional EscapeLineBreaks As Boolean = False) As String
+'This procedure converts non-displayable characters in the specified text to escape sequences and returns the result.
+Public Function Escape(Text As String) As String
 On Error GoTo ErrorTrap
 Dim Character As String
 Dim Escaped As String
@@ -145,15 +150,12 @@ Dim NextCharacter As String
       Character = Mid$(Text, Index, 1)
       NextCharacter = Mid$(Text, Index + 1, 1)
    
-      If Character = EscapeCharacter Then
-         Escaped = Escaped & String$(2, EscapeCharacter)
-      ElseIf Character = vbTab Or Character >= " " Then
+      If Character = ESCAPE_CHARACTER Then
+         Escaped = Escaped & String$(2, ESCAPE_CHARACTER)
+      ElseIf Character >= " " Then
          Escaped = Escaped & Character
-      ElseIf Character & NextCharacter = vbCrLf And Not EscapeLineBreaks Then
-         Escaped = Escaped & vbCrLf
-         Index = Index + 1
       Else
-         Escaped = Escaped & EscapeCharacter & String$(2 - Len(Hex$(Asc(Character))), "0") & Hex$(Asc(Character))
+         Escaped = Escaped & ESCAPE_CHARACTER & String$(2 - Len(Hex$(Asc(Character))), "0") & Hex$(Asc(Character))
       End If
       Index = Index + 1
    Loop
@@ -280,7 +282,7 @@ On Error GoTo ErrorTrap
       .NameV = CopyString(.NameV, lpszString)
       .Value = CopyString(.Value, GlobalLock(hData))
       .WindowHandle = hwnd
-      CheckForError GlobalUnlock(hData)
+      CheckForError GlobalUnlock(hData), , ERROR_INVALID_HANDLE
    End With
    
    ReDim Preserve Properties(LBound(Properties()) To UBound(Properties()) + 1) As PropertyStr
@@ -300,7 +302,7 @@ On Error GoTo ErrorTrap
    
    InterfaceWindow.Show
    Do While DoEvents()
-      CheckForError WaitMessage()
+      CheckForError WaitMessage(), , ERROR_INVALID_WINDOW_HANDLE
    Loop
    
    SetDebugPrivilege Disabled:=True
